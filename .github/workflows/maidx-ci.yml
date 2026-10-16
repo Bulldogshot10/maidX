@@ -32,7 +32,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: maidx-ci-\${{ github.workflow }}-\${{ github.ref }}
+  group: maidx-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -109,7 +109,7 @@ jobs:
         if: always() && hashFiles('android/app/build/outputs/apk/debug/*.apk') != ''
         uses: actions/upload-artifact@v6
         with:
-          name: maidx-android-debug-\${{ github.sha }}
+          name: maidx-android-debug-${{ github.sha }}
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 7
