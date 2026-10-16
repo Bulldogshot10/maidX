@@ -3,16 +3,16 @@ import type { ExpoConfig } from "expo/config";
 
 export default ({ config }: { config: ExpoConfig }): ExpoConfig => ({
   ...config,
-  name: "maid",
-  slug: "maid",
+  name: "MaidX",
+  slug: "maidx",
   orientation: "portrait",
   icon: "./assets/images/icon.png",
-  scheme: "maid",
+  scheme: "maidx",
   userInterfaceStyle: "automatic",
 
   ios: {
     supportsTablet: true,
-    bundleIdentifier: "com.danemadsen.maid",
+    bundleIdentifier: "com.bulldogshot10.maidx",
   },
 
   android: {
@@ -20,7 +20,7 @@ export default ({ config }: { config: ExpoConfig }): ExpoConfig => ({
       foregroundImage: "./assets/images/adaptive-icon.png",
       backgroundColor: "#000000",
     },
-    package: "com.danemadsen.maid",
+    package: "com.bulldogshot10.maidx",
     permissions: [
       "android.permission.RECORD_AUDIO",
       "android.permission.MODIFY_AUDIO_SETTINGS",
@@ -54,14 +54,7 @@ export default ({ config }: { config: ExpoConfig }): ExpoConfig => ({
     [
       "expo-build-properties",
       {
-        android: {
-          // You don't have ProGuard enabled right now, so this is optional.
-          // Keep it commented until/if you turn minify on.
-          // extraProguardRules: `
-          // # llama.rn
-          // -keep class com.rnllama.** { *; }
-          // `,
-        },
+        android: {},
       },
     ],
     [
@@ -70,7 +63,7 @@ export default ({ config }: { config: ExpoConfig }): ExpoConfig => ({
         enableEntitlements: true,
         entitlementsProfile: "production",
         forceCxx20: true,
-        enableOpenCLAndHexagon: true
+        enableOpenCLAndHexagon: true,
       },
     ],
     [
@@ -78,11 +71,11 @@ export default ({ config }: { config: ExpoConfig }): ExpoConfig => ({
       {
         microphonePermission: "Allow $(PRODUCT_NAME) to use the microphone.",
         speechRecognitionPermission: "Allow $(PRODUCT_NAME) to use speech recognition.",
-        androidSpeechServicePackages: ["com.google.android.googlequicksearchbox", "com.google.android.tts"]
-      }
+        androidSpeechServicePackages: ["com.google.android.googlequicksearchbox", "com.google.android.tts"],
+      },
     ],
     // Keeps the release signing, ABI splits and version code logic reproducible
-    // across `expo prebuild --clean`.
+    // across \`expo prebuild --clean\`.
     "./plugins/maid-android",
   ],
 
