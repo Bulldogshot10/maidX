@@ -4,7 +4,7 @@ import { installConsoleCapture } from "@/utilities/logger";
 import { Buffer } from "buffer";
 import * as SplashScreen from "expo-splash-screen";
 import { Stack, type NativeStackHeaderProps } from "expo-router";
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
@@ -33,19 +33,29 @@ function RootLayout() {
 
 function RootLayoutContent() {
   const { colorScheme } = useSystem();
+  const [layoutReady, setLayoutReady] = useState(false);
   const splashHiddenRef = useRef(false);
 
-  const hideSplashWhenReady = useCallback(() => {
-    if (splashHiddenRef.current) return;
-    splashHiddenRef.current = true;
-    void SplashScreen.hideAsync().catch((error) => {
-      console.warn("Unable to hide splash screen:", error);
-    });
-  }, []);
+  const onRootLayout = useCallback(() => setLayoutReady(true), []);
+
+  useEffect(() => {
+    if (!layoutReady || splashHiddenRef.current) return;
+
+    // Give async storage-backed providers a short window to hydrate before
+    // removing the native splash on slower Android vendor builds.
+    const timeout = setTimeout(() => {
+      splashHiddenRef.current = true;
+      void SplashScreen.hideAsync().catch((error) => {
+        console.warn("Unable to hide splash screen:", error);
+      });
+    }, 500);
+
+    return () => clearTimeout(timeout);
+  }, [layoutReady]);
 
   return (
     <GestureHandlerRootView
-      onLayout={hideSplashWhenReady}
+      onLayout={onRootLayout}
       style={{ flex: 1 }}
     >
       <SafeAreaProvider>
