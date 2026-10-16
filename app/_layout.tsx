@@ -1,16 +1,21 @@
-
-import DefaultHeader from '@/components/layout/default-header';
+import DefaultHeader from "@/components/layout/default-header";
 import { ChatContextProvider, LanguageModelProvider, SystemContextProvider, useSystem } from "@/context";
-import { installConsoleCapture } from '@/utilities/logger';
+import { installConsoleCapture } from "@/utilities/logger";
 import { Buffer } from "buffer";
+import * as SplashScreen from "expo-splash-screen";
 import { Stack, type NativeStackHeaderProps } from "expo-router";
-import { StatusBar } from 'expo-status-bar';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { KeyboardProvider } from 'react-native-keyboard-controller';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { useCallback, useRef } from "react";
+import { StatusBar } from "expo-status-bar";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import "react-native-url-polyfill/auto";
 
 (global as any).Buffer = Buffer;
+
+// Wait until the first app layout is ready before dismissing the native splash.
+// This avoids a blank/black frame on devices with slower provider initialization.
+void SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
 installConsoleCapture();
 
@@ -28,9 +33,21 @@ function RootLayout() {
 
 function RootLayoutContent() {
   const { colorScheme } = useSystem();
-  
+  const splashHiddenRef = useRef(false);
+
+  const hideSplashWhenReady = useCallback(() => {
+    if (splashHiddenRef.current) return;
+    splashHiddenRef.current = true;
+    void SplashScreen.hideAsync().catch((error) => {
+      console.warn("Unable to hide splash screen:", error);
+    });
+  }, []);
+
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView
+      onLayout={hideSplashWhenReady}
+      style={{ flex: 1 }}
+    >
       <SafeAreaProvider>
         <KeyboardProvider>
           {/* Edge-to-edge is mandatory on Android 15+, so the status bar has no
