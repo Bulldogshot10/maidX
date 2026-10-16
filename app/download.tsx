@@ -151,6 +151,11 @@ function ModelDownload({ source }: { source: HuggingfaceModel }) {
       }
     } catch (error) {
       console.error("Download failed:", error);
+      // Stop the other download too before removing partial files. Promise.all
+      // rejects as soon as either download fails, while its sibling may still run.
+      try { await downloadRef.current?.cancelAsync(); } catch {}
+      try { await projectorDownloadRef.current?.cancelAsync(); } catch {}
+
       // A failed or cancelled multi-file download must not leave a corrupt GGUF
       // that the user can select later and that then crashes during model load.
       try { await FileSystem.deleteAsync(modelFilePath, { idempotent: true }); } catch {}
