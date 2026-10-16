@@ -59,6 +59,33 @@ function ModelDownload({ source }: { source: HuggingfaceModel }) {
 
   const downloaded = !!modelFiles?.[currentKey] && (!projectorFileName || !!projectorFiles?.[currentKey]);
 
+  const verifyDownloadedGGUF = async (
+    result: FileSystem.FileSystemDownloadResult | undefined,
+    targetPath: string,
+    label: string,
+  ): Promise<string> => {
+    if (!result || result.status < 200 || result.status >= 300) {
+      throw new Error(`${label} download failed (HTTP ${result?.status ?? "no response"}).`);
+    }
+
+    const uri = result.uri || targetPath;
+    const info = await FileSystem.getInfoAsync(uri);
+    if (!info.exists || typeof info.size !== "number" || info.size < 4) {
+      throw new Error(`${label} download is incomplete or empty.`);
+    }
+
+    const header = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+      length: 4,
+      position: 0,
+    });
+    if (header !== "R0dVRg==") {
+      throw new Error(`${label} is not a valid GGUF file. The server may have returned an error page instead of the model.`);
+    }
+
+    return uri;
+  };
+
   const downloadModel = async () => {
     if (downloaded) return;
 
@@ -103,11 +130,18 @@ function ModelDownload({ source }: { source: HuggingfaceModel }) {
     try {
       const [modelResult, projectorResult] = await Promise.all(downloads);
 
-      setModelFiles?.((prev) => ({ ...prev, [currentKey]: modelResult?.uri ?? modelFilePath }));
+      // Never register a partial download or an HTTP error body as a model.
+      // The first four bytes should be GGUF magic ("GGUF" -> R0dVRg==).
+      const verifiedModelPath = await verifyDownloadedGGUF(modelResult, modelFilePath, "Model");
+      const verifiedProjectorPath = projectorUrl && projectorFilePath
+        ? await verifyDownloadedGGUF(projectorResult, projectorFilePath, "Projector")
+        : undefined;
+
+      setModelFiles?.((prev) => ({ ...prev, [currentKey]: verifiedModelPath }));
       setModelKey?.(currentKey);
 
-      if (projectorResult && projectorFilePath) {
-        setProjectorFiles?.((prev) => ({ ...prev, [currentKey]: projectorResult.uri ?? projectorFilePath }));
+      if (verifiedProjectorPath) {
+        setProjectorFiles?.((prev) => ({ ...prev, [currentKey]: verifiedProjectorPath }));
         setProjectorKey?.(currentKey);
       }
 
@@ -117,6 +151,17 @@ function ModelDownload({ source }: { source: HuggingfaceModel }) {
       }
     } catch (error) {
       console.error("Download failed:", error);
+      // Stop the other download too before removing partial files. Promise.all
+      // rejects as soon as either download fails, while its sibling may still run.
+      try { await downloadRef.current?.cancelAsync(); } catch {}
+      try { await projectorDownloadRef.current?.cancelAsync(); } catch {}
+
+      // A failed or cancelled multi-file download must not leave a corrupt GGUF
+      // that the user can select later and that then crashes during model load.
+      try { await FileSystem.deleteAsync(modelFilePath, { idempotent: true }); } catch {}
+      if (projectorFilePath) {
+        try { await FileSystem.deleteAsync(projectorFilePath, { idempotent: true }); } catch {}
+      }
       if (mountedRef.current) {
         setProgress(undefined);
         setProjectorProgress(undefined);

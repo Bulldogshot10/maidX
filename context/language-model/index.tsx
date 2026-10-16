@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Alert } from "react-native";
 import { MessageNode } from "message-nodes";
 import { createContext, Dispatch, SetStateAction, useContext, useEffect, useRef, useState } from "react";
 import { pickModelFile, pickProjectorFile } from "./llama";
@@ -100,7 +101,13 @@ export function LanguageModelProvider({ children }: { children: React.ReactNode 
           setSession({ definition, client: result, models: [], vision: {} });
         }
       })()
-        .catch((error) => console.error(`Error connecting to ${type}:`, error))
+        .catch((error) => {
+        console.error(`Error connecting to ${type}:`, error);
+        if (!cancelled && type === "Llama") {
+          const detail = error instanceof Error ? error.message : String(error);
+          Alert.alert("Could not load local model", detail);
+        }
+      })
         .finally(() => {
           if (!cancelled) setConnecting(false);
         });

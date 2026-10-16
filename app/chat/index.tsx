@@ -1,8 +1,8 @@
 import PromptInputGroup from "@/components/groups/prompt-input-group";
 import MessageView from "@/components/views/message/message-view";
-import { useChat, useSystem } from "@/context";
-import { randomUUID } from "expo-crypto";
+import { useChat, useLLM, useSystem } from "@/context";
 import { getConversation, hasNode, MessageNode } from "message-nodes";
+import { useEffect, useMemo, useRef } from "react";
 import { FlatList, StyleSheet, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -10,7 +10,17 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 function Chat() {
   const { colorScheme } = useSystem();
   const { mappings, root } = useChat();
+  const LLM = useLLM();
   const insets = useSafeAreaInsets();
+  const listRef = useRef<FlatList<MessageNode> | null>(null);
+  const isNearBottomRef = useRef(true);
+  const wasBusyRef = useRef(false);
+
+  const hasConversation = !!root && hasNode(mappings, root);
+  const messages = useMemo(
+    () => hasConversation && root ? getConversation(mappings, root).slice(1) : [],
+    [hasConversation, mappings, root],
+  );
 
   const renderItem = ({ item }: { item: MessageNode }) => (
     <MessageView
@@ -18,6 +28,31 @@ function Chat() {
       message={item}
     />
   );
+
+  useEffect(() => {
+    if (root && !hasConversation) {
+      console.warn("No conversation found for id " + root);
+    }
+  }, [hasConversation, root]);
+
+  // Scroll once when a generation starts, then keep following the stream only
+  // while the reader remains near the bottom. This keeps new tokens visible
+  // above the keyboard without dragging someone away from older messages.
+  useEffect(() => {
+    if (LLM.busy && !wasBusyRef.current) {
+      isNearBottomRef.current = true;
+    }
+    wasBusyRef.current = LLM.busy;
+  }, [LLM.busy]);
+
+  useEffect(() => {
+    if (!isNearBottomRef.current) return;
+
+    const frame = requestAnimationFrame(() => {
+      listRef.current?.scrollToEnd({ animated: false });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [messages, LLM.busy]);
 
   const styles = StyleSheet.create({
     view: {
@@ -35,15 +70,9 @@ function Chat() {
     },
   });
 
-  if (root && !hasNode(mappings, root)) {
-    console.warn(`No conversation found for id ${root}`);
-  }
-
   return (
-    // The composer already sits `insets.bottom` above the screen edge, so the
-    // keyboard only needs to make up the difference - hence the negative offset.
-    // Combined, the space below the composer is `insets.bottom` when the keyboard
-    // is closed and the full keyboard height when it is open.
+    // The composer already sits above the screen edge, so the keyboard only
+    // needs to make up the difference. Keep the bottom inset below the composer.
     <KeyboardAvoidingView
       testID="chat-page"
       behavior="padding"
@@ -51,12 +80,20 @@ function Chat() {
       keyboardVerticalOffset={-insets.bottom}
       style={styles.view}
     >
-      {root ? <FlatList
-        data={getConversation(mappings, root).slice(1)}
+      <FlatList
+        ref={listRef}
+        data={messages}
         style={styles.list}
-        keyExtractor={(item) => item.id?.toString() ?? randomUUID()}
+        keyExtractor={(item, index) => item.id?.toString() ?? "message-" + index}
         renderItem={renderItem}
-      /> : <View style={styles.list} />}
+        keyboardShouldPersistTaps="handled"
+        scrollEventThrottle={16}
+        onScroll={(event) => {
+          const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+          const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+          isNearBottomRef.current = distanceFromBottom <= 120;
+        }}
+      />
       <View style={styles.composer}>
         <PromptInputGroup />
       </View>

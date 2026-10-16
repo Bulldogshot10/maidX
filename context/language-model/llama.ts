@@ -1,32 +1,31 @@
 import { DocumentPickerAsset, getDocumentAsync } from "expo-document-picker";
-import * as FileSystem from 'expo-file-system/legacy';
-import { initLlama, loadLlamaModelInfo, RNLlamaOAICompatibleMessage } from 'llama.rn';
-import { MessageNode } from 'message-nodes';
+import * as Device from "expo-device";
+import * as FileSystem from "expo-file-system/legacy";
+import { initLlama, loadLlamaModelInfo, RNLlamaOAICompatibleMessage } from "llama.rn";
+import { MessageNode } from "message-nodes";
+import { Platform } from "react-native";
 import { LanguageModelClient, LanguageModelSettings } from "./types";
+import { getLlamaRuntimeProfile } from "./runtime-profile";
 
 async function isGGUF(fileUri: string): Promise<boolean> {
   try {
-    // Read first 4 bytes as base64, then decode to bytes
     const b64 = await FileSystem.readAsStringAsync(fileUri, {
       encoding: FileSystem.EncodingType.Base64,
       length: 4,
       position: 0,
     });
 
-    // atob is available in RN; if not, use a small base64 decoder util
     const bin = globalThis.atob ? globalThis.atob(b64) : Buffer.from(b64, "base64").toString("binary");
     if (bin.length < 4) return false;
 
-    const b0 = bin.charCodeAt(0) & 0xff;
-    const b1 = bin.charCodeAt(1) & 0xff;
-    const b2 = bin.charCodeAt(2) & 0xff;
-    const b3 = bin.charCodeAt(3) & 0xff;
-
-    return b0 === 0x47 && b1 === 0x47 && b2 === 0x55 && b3 === 0x46;
+    return bin.charCodeAt(0) === 0x47 &&
+      bin.charCodeAt(1) === 0x47 &&
+      bin.charCodeAt(2) === 0x55 &&
+      bin.charCodeAt(3) === 0x46;
   } catch {
     return false;
   }
-};
+}
 
 async function cleanupLocalModelFiles(modelFiles: Record<string, string>) {
   const updated = { ...modelFiles };
@@ -34,7 +33,7 @@ async function cleanupLocalModelFiles(modelFiles: Record<string, string>) {
 
   for (const localKey of locals) {
     try {
-      await FileSystem.deleteAsync(updated[localKey]);
+      await FileSystem.deleteAsync(updated[localKey], { idempotent: true });
     } catch (error) {
       console.error("Error deleting old model file:", error);
     }
@@ -42,7 +41,7 @@ async function cleanupLocalModelFiles(modelFiles: Record<string, string>) {
   }
 
   return updated;
-};
+}
 
 function parseMessages(messages: Array<MessageNode>): Array<RNLlamaOAICompatibleMessage> {
   return messages.map((message) => {
@@ -71,16 +70,17 @@ export interface PickedFile {
 }
 
 async function pickFile(): Promise<DocumentPickerAsset | undefined> {
-  const file = await getDocumentAsync({
-    multiple: false,
-  });
+  const file = await getDocumentAsync({ multiple: false });
   return file.assets?.[0];
 }
 
-// Moves a picked file into the app's documents, replacing any previously picked one.
+// Imports to a unique name so replacing a local file with the same original
+// filename cannot cause cleanup to delete the newly imported file.
 async function importLocalFile(asset: DocumentPickerAsset, files: Record<string, string>): Promise<PickedFile> {
-  const key = `${asset.name.replace(/\.[^/.]+$/, "")} (local)`;
-  const path = FileSystem.documentDirectory + asset.name;
+  const originalName = asset.name || asset.uri.split("/").pop() || "model.gguf";
+  const safeName = originalName.replace(/[\\/]/g, "_").replace(/[^\w.()-]/g, "_");
+  const key = originalName.replace(/\.[^/.]+$/, "") + " (local)";
+  const path = FileSystem.documentDirectory + Date.now() + "-" + safeName;
 
   await FileSystem.moveAsync({
     from: asset.uri,
@@ -95,7 +95,10 @@ export async function pickModelFile(modelFiles: Record<string, string>): Promise
   const asset = await pickFile();
   if (!asset) return;
 
-  if (!/\.gguf$/i.test(asset.uri) || !(await isGGUF(asset.uri))) {
+  // Some Android document providers return content:// URIs without the
+  // original extension. Validate the picked display name, then check GGUF magic.
+  const fileName = asset.name || asset.uri.split("/").pop() || "";
+  if (!/\.gguf$/i.test(fileName) || !(await isGGUF(asset.uri))) {
     alert("Please select a valid GGUF model file");
     return;
   }
@@ -107,28 +110,70 @@ export async function pickProjectorFile(projectorFiles: Record<string, string>):
   const asset = await pickFile();
   if (!asset) return;
 
-  if (!/\.mmproj$/i.test(asset.uri) && !/\.gguf$/i.test(asset.uri)) {
-    alert("Please select a multimodel projector file");
+  const fileName = asset.name || asset.uri.split("/").pop() || "";
+  if (!/\.mmproj$/i.test(fileName) && !/\.gguf$/i.test(fileName)) {
+    alert("Please select a multimodal projector file");
     return;
   }
 
   return importLocalFile(asset, projectorFiles);
 }
 
-/** Loads the selected GGUF model (and projector, if any) into memory with llama.rn. */
+/** Loads the selected GGUF model (and projector, if any) with mobile-safe limits. */
 export async function connectLlama(
   { modelKey, modelFiles, projectorKey, projectorFiles, parameters }: LanguageModelSettings
 ): Promise<LanguageModelClient | undefined> {
   if (!modelKey || !modelFiles[modelKey]) return;
 
   const modelFile = modelFiles[modelKey];
+  if (!(await isGGUF(modelFile))) {
+    throw new Error("The selected local model is missing, unreadable, or is not a valid GGUF file.");
+  }
 
-  // Ensure the selected file is a GGUF model before proceeding
-  if (!(await isGGUF(modelFile))) return;
+  const profile = getLlamaRuntimeProfile({
+    platform: Platform.OS,
+    manufacturer: Device.manufacturer,
+    modelName: Device.modelName,
+    totalMemory: Device.totalMemory,
+  });
 
-  const info = await loadLlamaModelInfo(modelFile) as Record<string, any>;
-  const ctx_key = Object.keys(info).find(key => key.toLowerCase().endsWith("context_length"));
-  const n_ctx = ctx_key ? Number(info[ctx_key]) : 2048;
+  let info: Record<string, any>;
+  try {
+    info = await loadLlamaModelInfo(modelFile) as Record<string, any>;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error("Could not read GGUF metadata. The file may be incomplete or unsupported. " + detail);
+  }
+
+  const ctxKey = Object.keys(info).find((key) => key.toLowerCase().endsWith("context_length"));
+  const rawModelContext = ctxKey ? Number(info[ctxKey]) : undefined;
+  const modelContext = rawModelContext !== undefined && Number.isFinite(rawModelContext) && rawModelContext > 0
+    ? Math.floor(rawModelContext)
+    : undefined;
+  const savedContext = Number(parameters?.n_ctx);
+  const requestedContext = Number.isFinite(savedContext) && savedContext > 0
+    ? Math.floor(savedContext)
+    : (modelContext ?? Math.min(2048, profile.maxContext));
+
+  // The model's training context is not a safe device allocation target. Clamp
+  // both saved preferences and model metadata to the device profile.
+  const contextCeiling = Math.min(profile.maxContext, modelContext ?? profile.maxContext);
+  const n_ctx = Math.max(512, Math.min(requestedContext, contextCeiling));
+
+  const savedThreads = Number(parameters?.n_threads);
+  const n_threads = Number.isFinite(savedThreads) && savedThreads > 0
+    ? Math.max(1, Math.min(Math.floor(savedThreads), profile.nThreads))
+    : profile.nThreads;
+
+  const savedBatch = Number(parameters?.n_batch);
+  const n_batch = Number.isFinite(savedBatch) && savedBatch > 0
+    ? Math.max(32, Math.min(Math.floor(savedBatch), profile.nBatch))
+    : profile.nBatch;
+
+  const savedUbatch = Number(parameters?.n_ubatch);
+  const n_ubatch = Number.isFinite(savedUbatch) && savedUbatch > 0
+    ? Math.max(32, Math.min(Math.floor(savedUbatch), profile.nUbatch, n_batch))
+    : Math.min(profile.nUbatch, n_batch);
 
   const projectorFile =
     projectorKey &&
@@ -137,12 +182,18 @@ export async function connectLlama(
       : undefined;
 
   const llama = await initLlama({
-    model: modelFile,
-    use_mlock: true,
-    n_ctx,
-    n_gpu_layers: 99,
     ...parameters,
-    ctx_shift: !projectorFile
+    model: modelFile,
+    use_mlock: profile.useMlock,
+    use_mmap: profile.useMmap,
+    n_ctx,
+    n_threads,
+    n_batch,
+    n_ubatch,
+    n_parallel: profile.nParallel,
+    n_gpu_layers: profile.nGpuLayers,
+    no_extra_bufts: profile.noExtraBufts,
+    ctx_shift: !projectorFile,
   });
 
   let imagesSupported = false;
@@ -151,7 +202,9 @@ export async function connectLlama(
     try {
       await llama.initMultimodal({
         path: projectorFile,
-        use_gpu: true
+        // Xclipse acceleration is not verified by llama.rn's documented Android
+        // support matrix; use CPU for this device until a real-device test passes.
+        use_gpu: !profile.forceCpuBackend,
       });
 
       const support = await llama.getMultimodalSupport();
@@ -166,10 +219,10 @@ export async function connectLlama(
     imagesSupported,
     prompt: async ({ messages, onUpdate }) => {
       const result = await llama.completion({
-        messages: parseMessages(messages)
+        messages: parseMessages(messages),
       }, (data) => onUpdate(data.token));
 
-      console.log('Timings:', result.timings);
+      console.log("Timings:", result.timings);
     },
     stop: () => llama.stopCompletion(),
     release: () => llama.release(),
